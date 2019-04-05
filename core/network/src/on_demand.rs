@@ -26,8 +26,7 @@ use linked_hash_map::LinkedHashMap;
 use linked_hash_map::Entry;
 use parking_lot::Mutex;
 use client::error::Error as ClientError;
-use client::light::fetcher::{Fetcher, FetchChecker, RemoteHeaderRequest,
-	RemoteCallRequest, RemoteReadRequest, RemoteChangesRequest, ChangesProof};
+use client::light::fetcher::{Fetcher, FetchChecker, RemoteBodyRequest, RemoteHeaderRequest,
 use crate::message;
 use network_libp2p::PeerId;
 use crate::config::Roles;
@@ -105,6 +104,7 @@ struct Request<Block: BlockT> {
 }
 
 enum RequestData<Block: BlockT> {
+	RemoteBody(RemoteBodyRequest<Block::Header>, OneShotSender<Result<Option<Vec<Block::Extrinsic>>, ClientError>>),
 	RemoteHeader(RemoteHeaderRequest<Block::Header>, OneShotSender<Result<Block::Header, ClientError>>),
 	RemoteRead(RemoteReadRequest<Block::Header>, OneShotSender<Result<Option<Vec<u8>>, ClientError>>),
 	RemoteCall(RemoteCallRequest<Block::Header>, OneShotSender<Result<Vec<u8>, ClientError>>),
@@ -326,6 +326,7 @@ impl<B> Fetcher<B> for OnDemand<B> where
 	type RemoteReadResult = RemoteResponse<Option<Vec<u8>>>;
 	type RemoteCallResult = RemoteResponse<Vec<u8>>;
 	type RemoteChangesResult = RemoteResponse<Vec<(NumberFor<B>, u32)>>;
+	type RemoteBodyResult = RemoteResponse<Option<Vec<B::Extrinsic>>>;
 
 	fn remote_header(&self, request: RemoteHeaderRequest<B::Header>) -> Self::RemoteHeaderResult {
 		let (sender, receiver) = channel();
@@ -348,6 +349,13 @@ impl<B> Fetcher<B> for OnDemand<B> where
 	fn remote_changes(&self, request: RemoteChangesRequest<B::Header>) -> Self::RemoteChangesResult {
 		let (sender, receiver) = channel();
 		self.schedule_request(request.retry_count.clone(), RequestData::RemoteChanges(request, sender),
+			RemoteResponse { receiver })
+	}
+
+
+	fn remote_body(&self, request: RemoteBodyRequest<B::Header>) -> Self::RemoteBodyResult {
+		let (sender, receiver) = channel();
+		self.schedule_request(request.retry_count.clone(), RequestData::RemoteBody(request, sender),
 			RemoteResponse { receiver })
 	}
 }
@@ -479,6 +487,7 @@ impl<Block: BlockT> Request<Block> {
 			RequestData::RemoteRead(ref data, _) => *data.header.number(),
 			RequestData::RemoteCall(ref data, _) => *data.header.number(),
 			RequestData::RemoteChanges(ref data, _) => data.max_block.0,
+			RequestData::RemoteBody(ref data, _) => *data.header.number()
 		}
 	}
 
@@ -511,6 +520,16 @@ impl<Block: BlockT> Request<Block> {
 					max: data.max_block.1.clone(),
 					key: data.key.clone(),
 				}),
+			RequestData::RemoteBody(ref data, _) => {
+				message::generic::Message::BlockRequest(message::BlockRequest::<Block> {
+					id: self.id,
+					fields: message::BlockAttributes::BODY | message::BlockAttributes::JUSTIFICATION,
+					from: message::FromBlock::Hash(data.header.hash()),
+					to: None,
+					direction: message::Direction::Ascending,
+					max: None,
+				})
+			}
 		}
 	}
 }
@@ -523,6 +542,7 @@ impl<Block: BlockT> RequestData<Block> {
 			RequestData::RemoteCall(_, sender) => { let _ = sender.send(Err(error)); },
 			RequestData::RemoteRead(_, sender) => { let _ = sender.send(Err(error)); },
 			RequestData::RemoteChanges(_, sender) => { let _ = sender.send(Err(error)); },
+			RequestData::RemoteBody(_, sender) => { let _ = sender.send(Err(error)); },
 		}
 	}
 }
