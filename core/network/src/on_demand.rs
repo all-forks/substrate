@@ -26,7 +26,8 @@ use linked_hash_map::LinkedHashMap;
 use linked_hash_map::Entry;
 use parking_lot::Mutex;
 use client::error::Error as ClientError;
-use client::light::fetcher::{Fetcher, FetchChecker, RemoteBodyRequest, RemoteHeaderRequest,
+use client::light::fetcher::{ChangesProof, Fetcher, FetchChecker, RemoteBodyRequest, RemoteChangesRequest,
+	RemoteCallRequest, RemoteHeaderRequest, RemoteReadRequest};
 use crate::message;
 use network_libp2p::PeerId;
 use crate::config::Roles;
