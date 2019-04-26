@@ -74,6 +74,13 @@ pub trait OnDemandService<Block: BlockT>: Send + Sync {
 		peer: PeerId,
 		response: message::RemoteChangesResponse<NumberFor<Block>, Block::Hash>
 	);
+
+	/// When body response is received from remote node.
+	fn on_remote_body_response(
+		&self,
+		peer: PeerId,
+		response: message::BlockResponse<Block>
+	);
 }
 
 /// On-demand requests service. Dispatches requests to appropriate peers.
@@ -178,7 +185,7 @@ impl<B: BlockT> OnDemand<B> where
 		let request = match core.remove(peer.clone(), request_id) {
 			Some(request) => request,
 			None => {
-				info!("Invalid remote {} response from peer {}", rtype, peer);
+				info!(target: "on_demand", "Invalid remote {} response from peer {}", rtype, peer);
 				self.send(NetworkMsg::ReportPeer(peer.clone(), i32::min_value()));
 				self.send(NetworkMsg::DisconnectPeer(peer.clone()));
 				core.remove_peer(peer);
@@ -190,7 +197,7 @@ impl<B: BlockT> OnDemand<B> where
 		let (retry_count, retry_request_data) = match try_accept(request) {
 			Accept::Ok => (retry_count, None),
 			Accept::CheckFailed(error, retry_request_data) => {
-				info!("Failed to check remote {} response from peer {}: {}", rtype, peer, error);
+				info!(target: "on_demand", "Failed to check remote {} response from peer {}: {}", rtype, peer, error);
 				self.send(NetworkMsg::ReportPeer(peer.clone(), i32::min_value()));
 				self.send(NetworkMsg::DisconnectPeer(peer.clone()));
 				core.remove_peer(peer);
@@ -204,7 +211,7 @@ impl<B: BlockT> OnDemand<B> where
 				}
 			},
 			Accept::Unexpected(retry_request_data) => {
-				info!("Unexpected response to remote {} from peer", rtype);
+				info!(target: "on_demand", "Unexpected response to remote {} from peer", rtype);
 				self.send(NetworkMsg::ReportPeer(peer.clone(), i32::min_value()));
 				self.send(NetworkMsg::DisconnectPeer(peer.clone()));
 				core.remove_peer(peer);
@@ -315,6 +322,45 @@ impl<B> OnDemandService<B> for OnDemand<B> where
 				Err(error) => Accept::CheckFailed(error, RequestData::RemoteChanges(request, sender)),
 			},
 			data => Accept::Unexpected(data),
+		})
+	}
+
+	fn on_remote_body_response(&self, peer: PeerId, response: message::BlockResponse<B>) {
+		self.accept_response("body", peer, response.id, |request| match request.data {
+			RequestData::RemoteBody(request, sender) => {
+				let num_bodies = response.blocks.iter().count();
+
+				// Number of bodies are hardcoded to 1 for valid `RemoteBodyResponses`
+				if num_bodies != 1 {
+					return Accept::CheckFailed("RemoteBodyResponse: invalid number of blocks".into(),
+												RequestData::RemoteBody(request, sender))
+				}
+
+				let response = response
+					.blocks
+					.into_iter()
+					.take(1)
+					.map(|b| match (b.body, b.header) {
+						(Some(b), Some(h)) => Some((b, h)),
+						_ => None
+					}).nth(0);
+
+				// Body and Header should included in valid `RemoteBodyResponses`
+				let (body, header) = match response {
+					Some(Some((b, h))) => (b, h),
+					_ => return Accept::CheckFailed("RemoteBodyResponse: is missing body or header".into(),
+													RequestData::RemoteBody(request, sender)),
+				};
+
+				if request.header.extrinsics_root() == header.extrinsics_root() {
+					let _ = sender.send(Ok(Some(body)));
+					Accept::Ok
+				} else {
+					Accept::CheckFailed("RemoteBodyResponse: invalid extrinsic root".into(),
+										RequestData::RemoteBody(request, sender))
+				}
+			}
+			other => Accept::Unexpected(other),
 		})
 	}
 }
@@ -521,9 +567,9 @@ impl<Block: BlockT> Request<Block> {
 					key: data.key.clone(),
 				}),
 			RequestData::RemoteBody(ref data, _) => {
-				message::generic::Message::BlockRequest(message::BlockRequest::<Block> {
+				message::generic::Message::RemoteBodyRequest(message::BlockRequest::<Block> {
 					id: self.id,
-					fields: message::BlockAttributes::BODY,
+					fields: message::BlockAttributes::BODY | message::BlockAttributes::HEADER,
 					from: message::FromBlock::Hash(data.header.hash()),
 					to: None,
 					direction: message::Direction::Ascending,

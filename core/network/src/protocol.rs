@@ -480,6 +480,8 @@ impl<B: BlockT, S: NetworkSpecialization<B>, H: ExHashT> Protocol<B, S, H> {
 			GenericMessage::RemoteHeaderResponse(response) => self.on_remote_header_response(who, response),
 			GenericMessage::RemoteChangesRequest(request) => self.on_remote_changes_request(who, request),
 			GenericMessage::RemoteChangesResponse(response) => self.on_remote_changes_response(who, response),
+			GenericMessage::RemoteBodyRequest(request) => self.on_remote_body_request(who, request),
+			GenericMessage::RemoteBodyResponse(response) => self.on_remote_body_response(who, response),
 			GenericMessage::Consensus(msg) => {
 				if self.context_data.peers.get(&who).map_or(false, |peer| peer.info.protocol_version > 2) {
 					self.consensus_gossip.on_incoming(
@@ -574,13 +576,7 @@ impl<B: BlockT, S: NetworkSpecialization<B>, H: ExHashT> Protocol<B, S, H> {
 		self.network_chan.send(NetworkMsg::Synchronized);
 	}
 
-	fn on_block_request(&mut self, peer: PeerId, request: message::BlockRequest<B>) {
-		trace!(target: "sync", "BlockRequest {} from {}: from {:?} to {:?} max {:?}",
-			request.id,
-			peer,
-			request.from,
-			request.to,
-			request.max);
+	fn create_block_response(&mut self, request: message::BlockRequest<B>) -> message::BlockResponse<B> {
 		let mut blocks = Vec::new();
 		let mut id = match request.from {
 			message::FromBlock::Hash(h) => BlockId::Hash(h),
@@ -630,10 +626,20 @@ impl<B: BlockT, S: NetworkSpecialization<B>, H: ExHashT> Protocol<B, S, H> {
 				}
 			}
 		}
-		let response = message::generic::BlockResponse {
+
+		message::generic::BlockResponse {
 			id: request.id,
 			blocks: blocks,
-		};
+		}
+	}
+	fn on_block_request(&mut self, peer: PeerId, request: message::BlockRequest<B>) {
+		trace!(target: "sync", "BlockRequest {} from {}: from {:?} to {:?} max {:?}",
+			request.id,
+			peer,
+			request.from,
+			request.to,
+			request.max);
+		let response = self.create_block_response(request);
 		trace!(target: "sync", "Sending BlockResponse with {} blocks", response.blocks.len());
 		self.send_message(peer, GenericMessage::BlockResponse(response))
 	}
@@ -652,6 +658,7 @@ impl<B: BlockT, S: NetworkSpecialization<B>, H: ExHashT> Protocol<B, S, H> {
 				(Some(first), Some(_)) => format!(" ({})", first),
 				_ => Default::default(),
 			};
+
 		trace!(target: "sync", "BlockResponse {} from {} with {} blocks {}",
 			response.id, peer, response.blocks.len(), blocks_range);
 
@@ -665,8 +672,10 @@ impl<B: BlockT, S: NetworkSpecialization<B>, H: ExHashT> Protocol<B, S, H> {
 				response,
 			);
 		} else {
-			self.sync.on_block_data(&mut ProtocolContext::new(&mut self.context_data, &self.network_chan), peer, request, response);
+			self.sync.on_block_data(&mut ProtocolContext::new(&mut self.context_data, &self.network_chan),
+									peer, request, response);
 		}
+
 	}
 
 	/// Perform time based maintenance.
@@ -1104,6 +1113,25 @@ impl<B: BlockT, S: NetworkSpecialization<B>, H: ExHashT> Protocol<B, S, H> {
 		self.on_demand
 			.as_ref()
 			.map(|s| s.on_remote_changes_response(who, response));
+	}
+
+
+	fn on_remote_body_request(&mut self, peer: PeerId, request: message::BlockRequest<B>) {
+		trace!(target: "on_demand", "RemoteBodyRequest {} from {}: from {:?} to {:?} max {:?}",
+			request.id,
+			peer,
+			request.from,
+			request.to,
+			request.max);
+		let response = self.create_block_response(request);
+		self.send_message(peer, GenericMessage::RemoteBodyResponse(response))
+	}
+
+	fn on_remote_body_response(&mut self, peer: PeerId, response: message::BlockResponse<B>) {
+		// propogate to the `on_demand` handler
+		self.on_demand
+			.as_ref()
+			.map(|od| od.on_remote_body_response(peer, response));
 	}
 }
 

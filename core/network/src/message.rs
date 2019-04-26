@@ -198,7 +198,11 @@ pub mod generic {
 		RemoteChangesRequest(RemoteChangesRequest<Hash>),
 		/// Remote changes reponse.
 		RemoteChangesResponse(RemoteChangesResponse<Number, Hash>),
-		/// Chain-specific message
+		/// Remote body request.
+		RemoteBodyRequest(BlockRequest<Hash, Number>),
+		/// Remote body response.
+		RemoteBodyResponse(BlockResponse<Header, Hash, Extrinsic>),
+		/// Chain-specific message.
 		#[codec(index = "255")]
 		ChainSpecific(Vec<u8>),
 	}
